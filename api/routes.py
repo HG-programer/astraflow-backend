@@ -1,8 +1,11 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 import base64
 import cv2
 import numpy as np
 from datetime import datetime
+import os
+import time
+
 from ..engine.detector import TrafficDetector
 from ..engine.traffic_tracker import TrafficTracker
 from ..engine.analytics import TrafficAnalytics
@@ -13,6 +16,53 @@ api_bp = Blueprint("api", __name__)
 detector = TrafficDetector()
 tracker = TrafficTracker(speed_limit_kmh=50.0)
 analytics = TrafficAnalytics()
+
+def generate_video_frames():
+    """Generator function that continuously yields processed video frames."""
+    # Use the test video we just created
+    video_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "2165-155327596.mp4"))
+    
+    if not os.path.exists(video_path):
+        # Fallback to empty grey frame if video not found
+        while True:
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            frame[:] = (100, 100, 100)
+            cv2.putText(frame, "Video Not Found", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+            _, buffer = cv2.imencode('.jpg', frame)
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(1)
+            
+    cap = cv2.VideoCapture(video_path)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            # Loop video
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            continue
+            
+        result = tracker.process_frame(frame, conf_thresh=0.25)
+        annotated = result["annotated_frame"]
+        
+        # Update analytics for dashboard
+        analytics.update_zone_vehicle_count("CAM-01", result["active_count"])
+        for vio in result["new_violations"]:
+            analytics.record_event(
+                event_type=vio["type"],
+                location=f"CAM-01 · {vio['vehicleType']}",
+                severity=vio["severity"],
+                icon="speed" if "Speed" in vio["type"] else "wrong-way"
+            )
+            
+        _, buffer = cv2.imencode('.jpg', annotated)
+        frame_bytes = buffer.tobytes()
+        
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+@api_bp.route("/video_feed", methods=["GET"])
+def video_feed():
+    """Live MJPEG video streaming endpoint."""
+    return Response(generate_video_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 @api_bp.route("/health", methods=["GET"])
