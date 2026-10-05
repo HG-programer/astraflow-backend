@@ -362,7 +362,7 @@ def auth_login():
         "token": "astraflow_jwt_token_demo_98234",
         "user": {
             "email": email,
-            "name": "Traffic Administrator",
+            "name": "FIVE.exe",
             "role": "admin"
         }
     })
